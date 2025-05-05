@@ -130,3 +130,92 @@
     (ok true)
   )
 )
+
+
+
+(define-map servant-responses
+  { servant-id: uint, reviewer: principal }
+  {
+    response: (string-utf8 500),
+    timestamp: uint
+  }
+)
+
+(define-read-only (get-servant-response (servant-id uint) (reviewer principal))
+  (map-get? servant-responses { servant-id: servant-id, reviewer: reviewer })
+)
+
+(define-public (respond-to-feedback (servant-id uint) (reviewer principal) (response (string-utf8 500)))
+  (let
+    (
+      (servant (unwrap! (get-civil-servant servant-id) ERR-SERVANT-NOT-FOUND))
+      (feedback (unwrap! (get-feedback servant-id reviewer) ERR-SERVANT-NOT-FOUND))
+    )
+    (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+    (map-set servant-responses
+      { servant-id: servant-id, reviewer: reviewer }
+      {
+        response: response,
+        timestamp: stacks-block-height
+      }
+    )
+    (ok true)
+  )
+)
+
+
+(define-map servant-analytics
+  { servant-id: uint }
+  {
+    one-star-count: uint,
+    two-star-count: uint,
+    three-star-count: uint,
+    four-star-count: uint,
+    five-star-count: uint,
+    last-review-height: uint
+  }
+)
+
+(define-read-only (get-servant-analytics (servant-id uint))
+  (map-get? servant-analytics { servant-id: servant-id })
+)
+
+(define-public (initialize-analytics (servant-id uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+    (map-set servant-analytics
+      { servant-id: servant-id }
+      {
+        one-star-count: u0,
+        two-star-count: u0,
+        three-star-count: u0,
+        four-star-count: u0,
+        five-star-count: u0,
+        last-review-height: u0
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-private (update-analytics (servant-id uint) (score uint))
+  (let
+    (
+      (analytics (unwrap! (get-servant-analytics servant-id) ERR-SERVANT-NOT-FOUND))
+    )
+    (map-set servant-analytics
+      { servant-id: servant-id }
+      (merge analytics
+        {
+          one-star-count: (if (is-eq score u1) (+ (get one-star-count analytics) u1) (get one-star-count analytics)),
+          two-star-count: (if (is-eq score u2) (+ (get two-star-count analytics) u1) (get two-star-count analytics)),
+          three-star-count: (if (is-eq score u3) (+ (get three-star-count analytics) u1) (get three-star-count analytics)),
+          four-star-count: (if (is-eq score u4) (+ (get four-star-count analytics) u1) (get four-star-count analytics)),
+          five-star-count: (if (is-eq score u5) (+ (get five-star-count analytics) u1) (get five-star-count analytics)),
+          last-review-height: stacks-block-height
+        }
+      )
+    )
+    (ok true)
+  )
+)
