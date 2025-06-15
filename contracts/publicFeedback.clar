@@ -219,3 +219,197 @@
     (ok true)
   )
 )
+
+
+(define-map department-stats
+  { department: (string-ascii 50) }
+  {
+    total-servants: uint,
+    active-servants: uint,
+    total-reviews: uint,
+    total-scores: uint,
+    average-score: uint,
+    last-updated: uint
+  }
+)
+
+(define-map department-score-distribution
+  { department: (string-ascii 50) }
+  {
+    one-star-total: uint,
+    two-star-total: uint,
+    three-star-total: uint,
+    four-star-total: uint,
+    five-star-total: uint
+  }
+)
+
+(define-read-only (get-department-stats (department (string-ascii 50)))
+  (map-get? department-stats { department: department })
+)
+
+(define-read-only (get-department-score-distribution (department (string-ascii 50)))
+  (map-get? department-score-distribution { department: department })
+)
+
+(define-public (initialize-department (department (string-ascii 50)))
+  (begin
+    (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+    (map-set department-stats
+      { department: department }
+      {
+        total-servants: u0,
+        active-servants: u0,
+        total-reviews: u0,
+        total-scores: u0,
+        average-score: u0,
+        last-updated: stacks-block-height
+      }
+    )
+    (map-set department-score-distribution
+      { department: department }
+      {
+        one-star-total: u0,
+        two-star-total: u0,
+        three-star-total: u0,
+        four-star-total: u0,
+        five-star-total: u0
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-private (update-department-stats (department (string-ascii 50)) (score uint))
+  (let
+    (
+      (dept-stats (unwrap! (get-department-stats department) ERR-SERVANT-NOT-FOUND))
+      (dept-distribution (unwrap! (get-department-score-distribution department) ERR-SERVANT-NOT-FOUND))
+      (new-total-reviews (+ (get total-reviews dept-stats) u1))
+      (new-total-scores (+ (get total-scores dept-stats) score))
+    )
+    (map-set department-stats
+      { department: department }
+      (merge dept-stats
+        {
+          total-reviews: new-total-reviews,
+          total-scores: new-total-scores,
+          average-score: (/ new-total-scores new-total-reviews),
+          last-updated: stacks-block-height
+        }
+      )
+    )
+    (map-set department-score-distribution
+      { department: department }
+      (merge dept-distribution
+        {
+          one-star-total: (if (is-eq score u1) (+ (get one-star-total dept-distribution) u1) (get one-star-total dept-distribution)),
+          two-star-total: (if (is-eq score u2) (+ (get two-star-total dept-distribution) u1) (get two-star-total dept-distribution)),
+          three-star-total: (if (is-eq score u3) (+ (get three-star-total dept-distribution) u1) (get three-star-total dept-distribution)),
+          four-star-total: (if (is-eq score u4) (+ (get four-star-total dept-distribution) u1) (get four-star-total dept-distribution)),
+          five-star-total: (if (is-eq score u5) (+ (get five-star-total dept-distribution) u1) (get five-star-total dept-distribution))
+        }
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-private (increment-department-servant-count (department (string-ascii 50)))
+  (let
+    (
+      (dept-stats (default-to 
+        {
+          total-servants: u0,
+          active-servants: u0,
+          total-reviews: u0,
+          total-scores: u0,
+          average-score: u0,
+          last-updated: stacks-block-height
+        }
+        (get-department-stats department)
+      ))
+    )
+    (map-set department-stats
+      { department: department }
+      (merge dept-stats
+        {
+          total-servants: (+ (get total-servants dept-stats) u1),
+          active-servants: (+ (get active-servants dept-stats) u1),
+          last-updated: stacks-block-height
+        }
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-private (decrement-department-active-count (department (string-ascii 50)))
+  (let
+    (
+      (dept-stats (unwrap! (get-department-stats department) ERR-SERVANT-NOT-FOUND))
+    )
+    (map-set department-stats
+      { department: department }
+      (merge dept-stats
+        {
+          active-servants: (if (> (get active-servants dept-stats) u0) 
+                             (- (get active-servants dept-stats) u1) 
+                             u0),
+          last-updated: stacks-block-height
+        }
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-public (submit-feedback-new (servant-id uint) (score uint) (comment (string-utf8 500)))
+  (let
+    (
+      (servant (unwrap! (get-civil-servant servant-id) ERR-SERVANT-NOT-FOUND))
+      (stats (unwrap! (get-servant-stats servant-id) ERR-SERVANT-NOT-FOUND))
+      (department (get department servant))
+    )
+    (asserts! (is-none (get-feedback servant-id tx-sender)) ERR-ALREADY-RATED)
+    (asserts! (and (>= score u1) (<= score u5)) ERR-INVALID-SCORE)
+    (asserts! (get active servant) ERR-SERVANT-NOT-FOUND)
+    
+    (map-set feedback-scores
+      { servant-id: servant-id, reviewer: tx-sender }
+      {
+        score: score,
+        comment: comment,
+        timestamp: stacks-block-height
+      }
+    )
+    
+    (map-set servant-stats
+      { servant-id: servant-id }
+      {
+        total-scores: (+ (get total-scores stats) score),
+        total-reviews: (+ (get total-reviews stats) u1),
+        average-score: (/ (+ (get total-scores stats) score) (+ (get total-reviews stats) u1))
+      }
+    )
+    
+    (try! (update-department-stats department score))
+    (ok true)
+  )
+)
+
+(define-public (deactivate-servant-new (servant-id uint))
+  (let
+    (
+      (servant (unwrap! (get-civil-servant servant-id) ERR-SERVANT-NOT-FOUND))
+      (department (get department servant))
+    )
+    (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+    (map-set civil-servants
+      { servant-id: servant-id }
+      (merge servant { active: false })
+    )
+    (try! (decrement-department-active-count department))
+    (ok true)
+  )
+)
