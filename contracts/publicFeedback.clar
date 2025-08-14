@@ -1329,3 +1329,444 @@
     (ok true)
   )
 )
+
+;; Professional Development Tracking System
+(define-constant ERR-TRAINING-NOT-FOUND (err u115))
+(define-constant ERR-TRAINING-ALREADY-COMPLETED (err u116))
+(define-constant ERR-TRAINING-NOT-REQUIRED (err u117))
+(define-constant ERR-INVALID-TRAINING-STATUS (err u118))
+(define-constant ERR-TRAINING-EXPIRED (err u119))
+
+(define-constant TRAINING-MANDATORY u1)
+(define-constant TRAINING-OPTIONAL u2)
+(define-constant TRAINING-REMEDIAL u3)
+
+(define-constant TRAINING-PENDING u1)
+(define-constant TRAINING-IN_PROGRESS u2)
+(define-constant TRAINING-COMPLETED u3)
+(define-constant TRAINING-FAILED u4)
+
+(define-data-var next-training-id uint u1)
+(define-data-var training-compliance-threshold uint u80) ;; 80% completion rate
+
+;; Training program registry
+(define-map training-programs
+  { training-id: uint }
+  {
+    title: (string-ascii 100),
+    description: (string-utf8 300),
+    duration-hours: uint,
+    training-type: uint, ;; mandatory, optional, remedial
+    prerequisites: (list 5 uint),
+    created-height: uint,
+    active: bool,
+    completion-reward: uint,
+    performance-threshold: uint ;; min score to avoid remedial training
+  }
+)
+
+;; Individual servant training records
+(define-map servant-training-records
+  { servant-id: uint, training-id: uint }
+  {
+    enrollment-date: uint,
+    completion-date: (optional uint),
+    status: uint,
+    pre-training-score: uint,
+    post-training-score: (optional uint),
+    attempts: uint,
+    instructor-notes: (optional (string-utf8 200)),
+    certification-valid-until: (optional uint)
+  }
+)
+
+;; Training requirements for servants
+(define-map training-requirements
+  { servant-id: uint }
+  {
+    mandatory-trainings: (list 10 uint),
+    remedial-trainings: (list 5 uint),
+    optional-trainings: (list 10 uint),
+    total-required-hours: uint,
+    completed-hours: uint,
+    compliance-percentage: uint,
+    last-updated: uint,
+    deadline: uint
+  }
+)
+
+;; Training effectiveness metrics
+(define-map training-effectiveness
+  { training-id: uint }
+  {
+    total-enrollments: uint,
+    total-completions: uint,
+    completion-rate: uint,
+    average-score-improvement: uint,
+    positive-feedback-percentage: uint,
+    average-duration: uint,
+    last-effectiveness-review: uint
+  }
+)
+
+;; Department training overview
+(define-map department-training-stats
+  { department: (string-ascii 50) }
+  {
+    total-training-hours: uint,
+    compliance-rate: uint,
+    average-improvement: uint,
+    active-trainees: uint,
+    completed-programs: uint,
+    pending-requirements: uint,
+    last-updated: uint
+  }
+)
+
+;; Servant development progress
+(define-map servant-development-profile
+  { servant-id: uint }
+  {
+    baseline-performance: uint,
+    current-performance: uint,
+    improvement-percentage: uint,
+    training-sessions-completed: uint,
+    development-goals: (list 3 uint),
+    next-review-date: uint,
+    mentor-assigned: (optional principal),
+    development-path: (string-ascii 50)
+  }
+)
+
+;; Read-only functions
+(define-read-only (get-training-program (training-id uint))
+  (map-get? training-programs { training-id: training-id })
+)
+
+(define-read-only (get-servant-training-record (servant-id uint) (training-id uint))
+  (map-get? servant-training-records { servant-id: servant-id, training-id: training-id })
+)
+
+(define-read-only (get-training-requirements (servant-id uint))
+  (map-get? training-requirements { servant-id: servant-id })
+)
+
+(define-read-only (get-training-effectiveness (training-id uint))
+  (map-get? training-effectiveness { training-id: training-id })
+)
+
+(define-read-only (get-department-training-stats (department (string-ascii 50)))
+  (map-get? department-training-stats { department: department })
+)
+
+(define-read-only (get-servant-development-profile (servant-id uint))
+  (map-get? servant-development-profile { servant-id: servant-id })
+)
+
+;; Check if servant meets training compliance
+(define-read-only (check-training-compliance (servant-id uint))
+  (let
+    (
+      (requirements (get-training-requirements servant-id))
+    )
+    (if (is-some requirements)
+      (let
+        (
+          (reqs (unwrap-panic requirements))
+          (compliance (get compliance-percentage reqs))
+        )
+        (>= compliance (var-get training-compliance-threshold))
+      )
+      false
+    )
+  )
+)
+
+;; Register new training program
+(define-public (register-training-program (title (string-ascii 100)) (description (string-utf8 300)) (duration-hours uint) (training-type uint) (performance-threshold uint))
+  (let
+    (
+      (training-id (var-get next-training-id))
+    )
+    (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+    (asserts! (and (>= training-type TRAINING-MANDATORY) (<= training-type TRAINING-REMEDIAL)) ERR-INVALID-TRAINING-STATUS)
+    (asserts! (> duration-hours u0) ERR-INVALID-TRAINING-STATUS)
+    
+    (map-set training-programs
+      { training-id: training-id }
+      {
+        title: title,
+        description: description,
+        duration-hours: duration-hours,
+        training-type: training-type,
+        prerequisites: (list),
+        created-height: stacks-block-height,
+        active: true,
+        completion-reward: u50,
+        performance-threshold: performance-threshold
+      }
+    )
+    
+    (map-set training-effectiveness
+      { training-id: training-id }
+      {
+        total-enrollments: u0,
+        total-completions: u0,
+        completion-rate: u0,
+        average-score-improvement: u0,
+        positive-feedback-percentage: u0,
+        average-duration: duration-hours,
+        last-effectiveness-review: stacks-block-height
+      }
+    )
+    
+    (var-set next-training-id (+ training-id u1))
+    (ok training-id)
+  )
+)
+
+;; Assign training requirement to servant
+(define-public (assign-training-requirement (servant-id uint) (training-id uint) (deadline uint))
+  (let
+    (
+      (servant (unwrap! (get-civil-servant servant-id) ERR-SERVANT-NOT-FOUND))
+      (training (unwrap! (get-training-program training-id) ERR-TRAINING-NOT-FOUND))
+      (current-requirements (get-training-requirements servant-id))
+      (servant-performance (unwrap! (get-servant-stats servant-id) ERR-SERVANT-NOT-FOUND))
+      (current-score (* (get average-score servant-performance) u100))
+    )
+    (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+    (asserts! (get active training) ERR-TRAINING-NOT-FOUND)
+    (asserts! (> deadline stacks-block-height) ERR-TRAINING-EXPIRED)
+    
+    (if (is-some current-requirements)
+      (let
+        (
+          (reqs (unwrap-panic current-requirements))
+          (training-type (get training-type training))
+        )
+        (map-set training-requirements
+          { servant-id: servant-id }
+          (merge reqs
+            {
+              mandatory-trainings: (if (is-eq training-type TRAINING-MANDATORY)
+                                     (unwrap! (as-max-len? (append (get mandatory-trainings reqs) training-id) u10) ERR-TRAINING-NOT-FOUND)
+                                     (get mandatory-trainings reqs)),
+              remedial-trainings: (if (is-eq training-type TRAINING-REMEDIAL)
+                                    (unwrap! (as-max-len? (append (get remedial-trainings reqs) training-id) u5) ERR-TRAINING-NOT-FOUND)
+                                    (get remedial-trainings reqs)),
+              optional-trainings: (if (is-eq training-type TRAINING-OPTIONAL)
+                                    (unwrap! (as-max-len? (append (get optional-trainings reqs) training-id) u10) ERR-TRAINING-NOT-FOUND)
+                                    (get optional-trainings reqs)),
+              total-required-hours: (+ (get total-required-hours reqs) (get duration-hours training)),
+              last-updated: stacks-block-height,
+              deadline: deadline
+            }
+          )
+        )
+      )
+      (map-set training-requirements
+        { servant-id: servant-id }
+        {
+          mandatory-trainings: (if (is-eq (get training-type training) TRAINING-MANDATORY) (list training-id) (list)),
+          remedial-trainings: (if (is-eq (get training-type training) TRAINING-REMEDIAL) (list training-id) (list)),
+          optional-trainings: (if (is-eq (get training-type training) TRAINING-OPTIONAL) (list training-id) (list)),
+          total-required-hours: (get duration-hours training),
+          completed-hours: u0,
+          compliance-percentage: u0,
+          last-updated: stacks-block-height,
+          deadline: deadline
+        }
+      )
+    )
+    
+    ;; Initialize training record
+    (map-set servant-training-records
+      { servant-id: servant-id, training-id: training-id }
+      {
+        enrollment-date: stacks-block-height,
+        completion-date: none,
+        status: TRAINING-PENDING,
+        pre-training-score: current-score,
+        post-training-score: none,
+        attempts: u0,
+        instructor-notes: none,
+        certification-valid-until: none
+      }
+    )
+    
+    (unwrap! (update-training-effectiveness training-id u1 u0) ERR-TRAINING-NOT-FOUND)
+    (ok true)
+  )
+)
+
+;; Record training completion
+(define-public (complete-training (servant-id uint) (training-id uint) (instructor-notes (string-utf8 200)))
+  (let
+    (
+      (training-record (unwrap! (get-servant-training-record servant-id training-id) ERR-TRAINING-NOT-FOUND))
+      (training (unwrap! (get-training-program training-id) ERR-TRAINING-NOT-FOUND))
+      (servant-performance-data (unwrap! (get-servant-stats servant-id) ERR-SERVANT-NOT-FOUND))
+      (current-score (* (get average-score servant-performance-data) u100))
+      (pre-score (get pre-training-score training-record))
+      (score-improvement (if (> current-score pre-score) (- current-score pre-score) u0))
+      (completion-date stacks-block-height)
+      (certification-validity (+ completion-date u5256000)) ;; ~1 year validity
+    )
+    (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+    (asserts! (is-eq (get status training-record) TRAINING-PENDING) ERR-TRAINING-ALREADY-COMPLETED)
+    
+    ;; Update training record
+    (map-set servant-training-records
+      { servant-id: servant-id, training-id: training-id }
+      (merge training-record
+        {
+          completion-date: (some completion-date),
+          status: TRAINING-COMPLETED,
+          post-training-score: (some current-score),
+          attempts: (+ (get attempts training-record) u1),
+          instructor-notes: (some instructor-notes),
+          certification-valid-until: (some certification-validity)
+        }
+      )
+    )
+    
+    ;; Update training requirements compliance
+    (let
+      (
+        (requirements (unwrap! (get-training-requirements servant-id) ERR-TRAINING-NOT-REQUIRED))
+        (new-completed-hours (+ (get completed-hours requirements) (get duration-hours training)))
+        (new-compliance (/ (* new-completed-hours u100) (get total-required-hours requirements)))
+      )
+      (map-set training-requirements
+        { servant-id: servant-id }
+        (merge requirements
+          {
+            completed-hours: new-completed-hours,
+            compliance-percentage: new-compliance,
+            last-updated: stacks-block-height
+          }
+        )
+      )
+    )
+    
+    ;; Update servant development profile
+    (try! (update-development-profile servant-id score-improvement))
+    
+    ;; Update training effectiveness
+    (unwrap! (update-training-effectiveness training-id u0 u1) ERR-TRAINING-NOT-FOUND)
+    
+    (ok score-improvement)
+  )
+)
+
+;; Initialize development profile for servant
+(define-public (initialize-development-profile (servant-id uint) (baseline-performance uint))
+  (let
+    (
+      (servant (unwrap! (get-civil-servant servant-id) ERR-SERVANT-NOT-FOUND))
+    )
+    (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+    
+    (map-set servant-development-profile
+      { servant-id: servant-id }
+      {
+        baseline-performance: baseline-performance,
+        current-performance: baseline-performance,
+        improvement-percentage: u0,
+        training-sessions-completed: u0,
+        development-goals: (list),
+        next-review-date: (+ stacks-block-height u2628000), ;; ~6 months
+        mentor-assigned: none,
+        development-path: "standard"
+      }
+    )
+    (ok true)
+  )
+)
+
+;; Generate training effectiveness report
+(define-public (generate-training-report (training-id uint))
+  (let
+    (
+      (effectiveness (unwrap! (get-training-effectiveness training-id) ERR-TRAINING-NOT-FOUND))
+      (total-enrollments (get total-enrollments effectiveness))
+      (total-completions (get total-completions effectiveness))
+      (completion-rate (if (> total-enrollments u0) (/ (* total-completions u100) total-enrollments) u0))
+    )
+    (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+    
+    (map-set training-effectiveness
+      { training-id: training-id }
+      (merge effectiveness
+        {
+          completion-rate: completion-rate,
+          last-effectiveness-review: stacks-block-height
+        }
+      )
+    )
+    (ok completion-rate)
+  )
+)
+
+;; Private helper functions
+(define-private (update-training-effectiveness (training-id uint) (enrollment-increment uint) (completion-increment uint))
+  (let
+    (
+      (effectiveness (unwrap! (get-training-effectiveness training-id) ERR-TRAINING-NOT-FOUND))
+    )
+    (map-set training-effectiveness
+      { training-id: training-id }
+      (merge effectiveness
+        {
+          total-enrollments: (+ (get total-enrollments effectiveness) enrollment-increment),
+          total-completions: (+ (get total-completions effectiveness) completion-increment)
+        }
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-private (update-development-profile (servant-id uint) (score-improvement uint))
+  (let
+    (
+      (profile (unwrap! (get-servant-development-profile servant-id) ERR-SERVANT-NOT-FOUND))
+      (baseline (get baseline-performance profile))
+      (new-current (+ (get current-performance profile) score-improvement))
+      (improvement-pct (if (> baseline u0) (/ (* (- new-current baseline) u100) baseline) u0))
+    )
+    (map-set servant-development-profile
+      { servant-id: servant-id }
+      (merge profile
+        {
+          current-performance: new-current,
+          improvement-percentage: improvement-pct,
+          training-sessions-completed: (+ (get training-sessions-completed profile) u1)
+        }
+      )
+    )
+    (ok true)
+  )
+)
+
+;; Auto-assign remedial training for underperforming servants
+(define-public (auto-assign-remedial-training (servant-id uint))
+  (let
+    (
+      (servant (unwrap! (get-civil-servant servant-id) ERR-SERVANT-NOT-FOUND))
+      (stats (unwrap! (get-servant-stats servant-id) ERR-SERVANT-NOT-FOUND))
+      (average-score (get average-score stats))
+      (department (get department servant))
+    )
+    (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+    (asserts! (< average-score u300) ERR-TRAINING-NOT-REQUIRED) ;; Below 3.0 average
+    
+    ;; Assign customer service training for low scores
+    (try! (assign-training-requirement servant-id u1 (+ stacks-block-height u1314000))) ;; 3 months deadline
+    
+    (ok true)
+  )
+)
+
+
